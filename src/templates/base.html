@@ -104,11 +104,19 @@
       {% elif config.site_description %}
         <meta property="og:description" content="{{ config.site_description }}" />
       {% endif %}
-      {% if config.theme.favicon %}
-        {# og:image 使用站点根路径 + favicon(站点部署于根路径,见 home.html 注释) #}
-        <meta property="og:image" content="{{ config.site_url ~ config.theme.favicon }}" />
+      {# og:image 三级优先:页级 meta.og_image(相对路径拼 site_url)→ extra.og_image → 省略(不再输出 favicon/SVG) #}
+      {% if page.meta and page.meta.og_image %}
+        {% set og_image = page.meta.og_image %}
+      {% elif config.extra.og_image %}
+        {% set og_image = config.extra.og_image %}
       {% endif %}
-      <meta name="twitter:card" content="summary" />
+      {% if og_image and not og_image.startswith("http") %}
+        {% set og_image = config.site_url ~ og_image %}
+      {% endif %}
+      {% if og_image %}
+        <meta property="og:image" content="{{ og_image }}" />
+      {% endif %}
+      <meta name="twitter:card" content="{% if og_image %}summary_large_image{% else %}summary{% endif %}" />
       <meta name="twitter:title" content="{{ og_title }}" />
       {% if page.meta and page.meta.description %}
         <meta name="twitter:description" content="{{ page.meta.description }}" />
@@ -128,9 +136,21 @@
       </script>
     {% endblock %}
 
+    {% if config.extra.seo_verification and config.extra.seo_verification.google %}
+      <meta name="google-site-verification" content="{{ config.extra.seo_verification.google }}" />
+    {% endif %}
+    {% if config.extra.seo_verification and config.extra.seo_verification.bing %}
+      <meta name="msvalidate.01" content="{{ config.extra.seo_verification.bing }}" />
+    {% endif %}
+    {% if config.extra.seo_verification and config.extra.seo_verification.baidu %}
+      <meta name="baidu-site-verification" content="{{ config.extra.seo_verification.baidu }}" />
+    {% endif %}
+
     <!-- Site title -->
     {% block htmltitle %}
-      {% if page.meta and page.meta.title %}
+      {% if page.file.url in ('.', './', 'index.html') and config.extra.seo_home_title %}
+        <title>{{ config.extra.seo_home_title }}</title>
+      {% elif page.meta and page.meta.title %}
         <title>{% if page.meta.title != config.site_name %}{{ page.meta.title }} - {% endif %}{{ config.site_name }}</title>
       {% elif page.title and not page.is_homepage %}
         <title>{% if page.title | striptags != config.site_name %}{{ page.title | striptags }} - {% endif %}{{ config.site_name }}</title>
