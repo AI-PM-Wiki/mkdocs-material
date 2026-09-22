@@ -31,8 +31,11 @@
   <span><i class="md-icon">{% include ".icons/material/copyright.svg" %}</i>本页面的全部内容在 <strong>{{ copyright }}</strong> 协议之条款下提供，附加条款亦可能应用</span>
 </blockquote>
 <!-- Comments Integration -->
-{#- 主页(index.md)与内容页一样渲染本 partial,评论区不再按 is_homepage 排除;
-    讨论串按 page.title 作 data-term 匹配,主页因此沿用原「关于本项目」页那条讨论 -#}
+{#- 主页也走评论区:本站拿「关于本项目」页当主页,它和内容页一样渲染本 partial。
+    index.md 挂在 nav 的「简介」section 下 → page.parent 非 None → mkdocs 的
+    is_homepage 本就为 False,原判断是空转;删掉它是为了让评论区不依赖 nav 位置 ——
+    哪天 index.md 挪到 nav 顶层,is_homepage 变 True,评论区不该因此消失。
+    讨论串按 page.title 作 data-term 匹配,主页因此沿用原「关于本项目」页那条讨论。 -#}
 {% set pageID = page.title | default("404", true) %}
 <div id="__comments" class="giscus" data-no-instant></div>
 {% include "partials/javascripts/comments.html" %}
