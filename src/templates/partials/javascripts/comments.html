@@ -1,7 +1,36 @@
 <div id="__comments_script"></div>
 <script>
   var comments = document.createElement('script');
-  var commentsTheme = document.body.dataset.mdColorScheme === 'slate' ? 'dark' : 'light';
+
+  /*
+   * 计算页面应当使用的配色方案。body 上的 data-md-color-scheme 由服务端按调色板
+   * 配置的第一项渲染,首次访问时调色板组件尚未挂载,本脚本读到的仍是那个默认值;
+   * 此时改按 localStorage 保存的偏好与调色板的媒体查询判定。
+   */
+  function giscusTheme() {
+    if (!__md_get('__palette')) {
+      var inputs = document.querySelectorAll('[data-md-component=palette] input[data-md-color-media]');
+      for (var i = 0; i < inputs.length; i++) {
+        if (matchMedia(inputs[i].getAttribute('data-md-color-media')).matches) {
+          return inputs[i].getAttribute('data-md-color-scheme') === 'slate' ? 'dark' : 'light';
+        }
+      }
+    }
+    return document.body.dataset.mdColorScheme === 'slate' ? 'dark' : 'light';
+  }
+
+  /*
+   * giscus 客户端脚本执行时就把 data-theme 写进 iframe 地址,调色板组件随后发出的
+   * 主题消息可能早于组件就绪而丢失;收到组件自身的第一条消息时补发当前主题,消息按
+   * 主题值去重。
+   */
+  window.addEventListener('message', function (event) {
+    if (event.origin !== 'https://giscus.app' || !event.source) return;
+    var theme = giscusTheme();
+    if (theme === window.__md_giscusTheme) return;
+    window.__md_giscusTheme = theme;
+    event.source.postMessage({ giscus: { setConfig: { theme: theme } } }, 'https://giscus.app');
+  });
 
   Object.entries({
     async: true,
@@ -17,7 +46,7 @@
     "data-reactions-enabled": "1",
     "data-emit-metadata": "0",
     "data-input-position": "top",
-    "data-theme": commentsTheme,
+    "data-theme": giscusTheme(),
     "data-lang": "zh-CN",
     "data-loading": "lazy",
   }).forEach(e => comments.setAttribute(e[0], e[1]));
