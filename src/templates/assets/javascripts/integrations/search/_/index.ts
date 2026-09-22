@@ -106,6 +106,49 @@ function difference(a: string[], b: string[]): string[] {
 }
 
 /* ----------------------------------------------------------------------------
+ * Functions
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Chinese query terms which are grammar rather than content (question frames,
+ * function and stop words). Because lunr indexes title and text with a title
+ * boost of 1e3, an OR-query like "RAG 是什么" would let a section title such
+ * as "MCP 是什么" outrank the actual RAG article: the segmented query term
+ * "是什么" matches the unsegmented title token via trailing wildcard and
+ * scores 1e3 × idf. These terms must therefore not be matched against the
+ * title field — they still match against the text and tags fields.
+ */
+const genericTerms = new Set([
+  /* Function words */
+  "是", "的", "了", "着", "过", "呢", "吗", "吧", "啊", "呀", "嘛", "啦",
+  "在", "有", "和", "与", "及", "或", "而", "被", "把", "让", "为", "对",
+  "从", "向", "于", "之", "其", "该", "这", "那", "此", "各", "每", "等",
+  "就", "都", "很", "也", "又", "再", "最", "只", "还", "并", "但", "且",
+  "若", "如", "因", "所", "以", "给", "跟", "同", "比", "别", "曾", "既",
+
+  /* Question frames */
+  "什么", "是什么", "什么是", "什么样", "长什么样", "为什么", "为何", "为啥",
+  "怎么", "怎样", "怎么样", "如何", "怎么办", "做什么", "干啥", "干嘛",
+  "哪些", "哪个", "哪种", "多少", "是否", "哪儿", "哪里", "啥", "谁",
+  "何处", "何时", "何地", "可否", "能不能"
+])
+
+/**
+ * Check whether a query term (as produced by `transformSearchQuery`, e.g.
+ * "是什么*" or "+是*") is a generic Chinese term
+ *
+ * @param term - Query term
+ *
+ * @returns Test result
+ */
+function isGenericTerm(term: string): boolean {
+  const core = term
+    .replace(/^[+-]/, "")
+    .replace(/[*~^]+|\d+$/, "")
+  return /^\p{sc=Han}+$/u.test(core) && genericTerms.has(core)
+}
+
+/* ----------------------------------------------------------------------------
  * Class
  * ------------------------------------------------------------------------- */
 
@@ -217,6 +260,16 @@ export class Search {
     if (!query)
       return { items: [] }
 
+    /* Suppress title-field matching for generic Chinese query terms, so
+       grammar words (e.g. 是什么, 为什么, 怎么) cannot leverage the title
+       boost of 1e3 and outrank documents matching the actual content terms */
+    query = query.split(/\s+/).map(term => {
+      if (!isGenericTerm(term))
+        return term
+      const mod = /^[+-]/.exec(term)
+      return `${mod ? mod[0] : ""}text:${mod ? term.slice(mod[0].length) : term}`
+    }).join(" ")
+
     /* Parse query to extract clauses for analysis */
     const clauses = parseSearchQuery(query)
       .filter(clause => (
@@ -267,11 +320,26 @@ export class Search {
             doc[field] = fn(doc[field], table, positions, field !== "text")
           }
 
+          /* Compute text term frequency of distinctive (non-generic) query
+             terms — documents that actually discuss the topic at length are
+             ranked above documents that merely mention it once, working
+             around lunr's saturating BM25 term-frequency normalization */
+          let tf = 0
+          for (const [term, match] of Object.entries(matchData.metadata)) {
+            if (!terms[term] || isGenericTerm(term))
+              continue
+            const meta = match as { text?: { position: Position[] } }
+            if (typeof meta.text !== "undefined")
+              tf += meta.text.position.length
+          }
+          tf = tf / (15 + tf)
+
           /* Highlight title and text and apply post-query boosts */
           const boost = +!doc.parent +
             Object.values(terms)
               .filter(t => t).length /
-            Object.keys(terms).length
+            Object.keys(terms).length +
+            tf
 
           /* Append item */
           item.push({
