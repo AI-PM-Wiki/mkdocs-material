@@ -86,9 +86,15 @@
       />
 
       <!-- Open Graph / Twitter -->
-      {% if page.meta and page.meta.title %}
+      {# 首页判定:index.md 挂在 nav 的「简介」section 下 → page.parent 非 None,
+         mkdocs 的 page.is_homepage 恒为 False,故与 htmltitle 一致改用 page.file.url #}
+      {# 404.html 由 mkdocs 直接渲染,不传 page(page is none);它不是首页 #}
+      {% set is_home = page is not none and page.file.url in ('.', './', 'index.html') %}
+      {% if is_home and config.extra.seo_home_title %}
+        {% set og_title = config.extra.seo_home_title %}
+      {% elif page.meta and page.meta.title %}
         {% set og_title = page.meta.title %}
-      {% elif page.title and not page.is_homepage %}
+      {% elif page.title and not is_home %}
         {% set og_title = page.title | striptags %}
       {% else %}
         {% set og_title = config.site_name %}
@@ -148,11 +154,13 @@
 
     <!-- Site title -->
     {% block htmltitle %}
-      {% if page.file.url in ('.', './', 'index.html') and config.extra.seo_home_title %}
+      {# 404.html 由 mkdocs 直接渲染,不传 page(page is none);它不是首页 #}
+      {% set is_home = page is not none and page.file.url in ('.', './', 'index.html') %}
+      {% if is_home and config.extra.seo_home_title %}
         <title>{{ config.extra.seo_home_title }}</title>
       {% elif page.meta and page.meta.title %}
         <title>{% if page.meta.title != config.site_name %}{{ page.meta.title }} - {% endif %}{{ config.site_name }}</title>
-      {% elif page.title and not page.is_homepage %}
+      {% elif page.title and not is_home %}
         <title>{% if page.title | striptags != config.site_name %}{{ page.title | striptags }} - {% endif %}{{ config.site_name }}</title>
       {% else %}
         <title>{{ config.site_name }}</title>
