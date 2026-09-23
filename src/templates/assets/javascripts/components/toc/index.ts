@@ -311,7 +311,7 @@ interface BarRow {
   bottom: number
 }
 
-/** Draw a continuous ribbon which follows the indentation of each TOC row. */
+/** Compute the centre line of the TOC track. */
 function getBarRows(paths: HTMLAnchorElement[][], ref: DOMRect): BarRow[] {
   const rects = paths.map(([anchor]) => anchor.getBoundingClientRect())
   const left = Math.min(...rects.map(rect => rect.left))
@@ -322,43 +322,20 @@ function getBarRows(paths: HTMLAnchorElement[][], ref: DOMRect): BarRow[] {
   }))
 }
 
-function getBarPolygon(rows: BarRow[]): string {
-  type Point = [number, number]
-  const nodes: Point[] = []
+function getBarPath(rows: BarRow[]): string {
+  let path = ""
   for (const [index, row] of rows.entries()) {
-    if (index && row.x !== rows[index - 1].x)
-      nodes.push([rows[index - 1].x, row.top])
-    if (!index || row.x !== rows[index - 1].x)
-      nodes.push([row.x, row.top])
-    nodes.push([row.x, row.bottom])
+    if (index) {
+      const previous = rows[index - 1]
+      const bend = Math.max(0, Math.min(4, (row.top - previous.bottom) / 2))
+      path += ` C${previous.x} ${row.top - bend}` +
+        ` ${row.x} ${previous.bottom + bend} ${row.x} ${row.top}`
+    } else {
+      path = `M${row.x} ${row.top}`
+    }
+    path += ` L${row.x} ${row.bottom}`
   }
-  const path = nodes.filter(([x, y], index) =>
-    !index || x !== nodes[index - 1][0] || y !== nodes[index - 1][1]
-  )
-  if (path.length < 2)
-    return "polygon(0 0, 0 0, 0 0)"
-
-  /* Offset both sides of the centre line, including its horizontal turns. */
-  const normal = ([ax, ay]: Point, [bx, by]: Point): Point => {
-    const dx = bx - ax
-    const dy = by - ay
-    const length = Math.hypot(dx, dy)
-    return [dy * WIDTH / (2 * length), -dx * WIDTH / (2 * length)]
-  }
-  const edge = (side: number) => path.map((point, index) => {
-    const before = index
-      ? normal(path[index - 1], point)
-      : normal(point, path[1])
-    const after = index < path.length - 1
-      ? normal(point, path[index + 1])
-      : before
-    const shift: Point = before[0] === after[0] && before[1] === after[1]
-      ? before
-      : [before[0] + after[0], before[1] + after[1]]
-    return `${point[0] + side * shift[0]}px ${point[1] + side * shift[1]}px`
-  })
-  const points = [...edge(1), ...edge(-1).reverse()]
-  return `polygon(${points.join(", ")})`
+  return path
 }
 
 /**
@@ -375,11 +352,35 @@ export function mountTableOfContents(
   return defer(() => {
     const push$ = new Subject<TableOfContents>()
     const done$ = push$.pipe(ignoreElements(), endWith(true))
+    const ns = "http://www.w3.org/2000/svg"
+    const holder = document.createElement("li")
+    holder.className = "pm-toc-indicator"
+    holder.setAttribute("aria-hidden", "true")
+    const createTrack = (name: string) => {
+      const svg = document.createElementNS(ns, "svg")
+      svg.classList.add(name)
+      const path = document.createElementNS(ns, "path")
+      svg.append(path)
+      holder.append(svg)
+      return { svg, path }
+    }
+    const track = createTrack("pm-toc-track")
+    const marker = createTrack("pm-toc-marker")
+    el.prepend(holder)
+
     push$.subscribe(state => {
+      const rect = el.getBoundingClientRect()
       const rows = getBarRows(
         [...state.prev, ...state.active, ...state.next],
-        el.getBoundingClientRect()
+        rect
       )
+      const height = Math.max(rect.height, ...rows.map(row => row.bottom + WIDTH))
+      const d = getBarPath(rows)
+      holder.style.height = `${height}px`
+      for (const { svg, path } of [track, marker]) {
+        svg.setAttribute("viewBox", `0 0 ${rect.width} ${height}`)
+        path.setAttribute("d", d)
+      }
       const visible = state.active
       const shown = new Set(visible.map(([anchor]) => anchor))
 
@@ -401,38 +402,26 @@ export function mountTableOfContents(
         anchor.classList.remove("md-nav__link--active")
       }
 
-      /* Compute the highlighted range of the indicator bar */
+      /* Reveal the visible range of the track, preserving the reading tail. */
       const start = state.prev.length
+      let top = 0
+      let bottom = 0
       if (visible.length) {
         const active = rows.slice(start, start + visible.length)
-        const top = active[0].top
-        const bottom = active[active.length - 1].bottom
-        el.style.setProperty("--pm-toc-marker-top", `${top}px`)
-        el.style.setProperty("--pm-toc-marker-height", `${bottom - top}px`)
-        el.style.setProperty("--pm-toc-marker-clip", getBarPolygon(
-          active.map(row => ({
-            x: row.x,
-            top: row.top - top,
-            bottom: row.bottom - top
-          }))
-        ))
+        top = active[0].top
+        bottom = active[active.length - 1].bottom
       } else if (start) {
 
         /* Only the content of the last anchor above the viewport is visible,
            but not its heading, so only the tail of the bar is highlighted */
         const row = rows[start - 1]
-        el.style.setProperty("--pm-toc-marker-top", `${row.bottom - TAIL}px`)
-        el.style.setProperty("--pm-toc-marker-height", `${TAIL}px`)
-        el.style.setProperty("--pm-toc-marker-clip", getBarPolygon([
-          { x: row.x, top: 0, bottom: TAIL }
-        ]))
-      } else {
-        el.style.setProperty("--pm-toc-marker-height", "0px")
+        top = row.bottom - TAIL
+        bottom = row.bottom
       }
-
-      el.style.setProperty("--pm-toc-track-clip", rows.length
-        ? getBarPolygon(rows)
-        : "polygon(0 0, 0 0, 0 0)")
+      el.style.setProperty("--pm-toc-marker-top", `${top}px`)
+      el.style.setProperty("--pm-toc-marker-height", `${bottom - top}px`)
+      marker.svg.style.clipPath =
+        `polygon(0 ${top}px, 100% ${top}px, 100% ${bottom}px, 0 ${bottom}px)`
     })
 
     /* Set up following, if enabled */
@@ -504,7 +493,10 @@ export function mountTableOfContents(
     return watchTableOfContents(el, { viewport$, header$ })
       .pipe(
         tap(state => push$.next(state)),
-        finalize(() => push$.complete()),
+        finalize(() => {
+          push$.complete()
+          holder.remove()
+        }),
         map(state => ({ ref: el, ...state }))
       )
   })
