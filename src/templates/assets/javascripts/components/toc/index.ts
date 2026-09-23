@@ -116,7 +116,8 @@ interface MountOptions {
  *
  * Note that all anchors inside the viewport are the items of the `active`
  * anchor list, so a section is highlighted as soon as its heading enters the
- * viewport and stays highlighted until it leaves it.
+ * viewport and stays highlighted until it leaves it. The current anchor - the
+ * section the viewport starts in - is the last item of the `prev` anchor list.
  *
  * @param el - Table of contents element
  * @param options - Options
@@ -268,22 +269,6 @@ export function watchTableOfContents(
 const TAIL = 8
 
 /**
- * Retrieve the anchors that are inside the viewport
- *
- * When no anchor is inside the viewport, the last anchor above it is returned,
- * so that the highlighted range never collapses while a section is read.
- *
- * @param state - Table of contents state
- *
- * @returns Anchors
- */
-function getVisibleAnchors(
-  { prev, active }: TableOfContents
-): HTMLAnchorElement[][] {
-  return active.length ? active : prev.slice(-1)
-}
-
-/**
  * Mount table of contents
  *
  * @param el - Table of contents element
@@ -352,12 +337,12 @@ export function mountTableOfContents(
       /* Bring active anchor into view */ // @todo: refactor
       push$
         .pipe(
-          filter(state => getVisibleAnchors(state).length > 0),
+          filter(({ prev }) => prev.length > 0),
           combineLatestWith(main$.pipe(observeOn(asyncScheduler))),
           withLatestFrom(smooth$)
         )
-          .subscribe(([[state], behavior]) => {
-            const [anchor] = getVisibleAnchors(state)[0]
+          .subscribe(([[{ prev }], behavior]) => {
+            const [anchor] = prev[prev.length - 1]
             if (anchor.offsetHeight) {
 
               /* Retrieve overflowing container and scroll */
@@ -386,11 +371,11 @@ export function mountTableOfContents(
           repeat({ delay: 250 }),
           withLatestFrom(push$)
         )
-          .subscribe(([, state]) => {
+          .subscribe(([, { prev }]) => {
             const url = getLocation()
 
             /* Set hash fragment to active anchor */
-            const anchor = getVisibleAnchors(state)[0]
+            const anchor = prev[prev.length - 1]
             if (anchor && anchor.length) {
               const [active] = anchor
               const { hash } = new URL(active.href)
