@@ -24,7 +24,6 @@ import {
   Observable,
   Subject,
   asyncScheduler,
-  bufferCount,
   combineLatestWith,
   debounceTime,
   defer,
@@ -42,7 +41,6 @@ import {
   scan,
   share,
   skip,
-  startWith,
   switchMap,
   takeUntil,
   tap,
@@ -52,7 +50,6 @@ import {
 import { feature } from "~/_"
 import {
   Viewport,
-  getElement,
   getElementContainer,
   getElementSize,
   getElements,
@@ -61,10 +58,7 @@ import {
   watchElementSize
 } from "~/browser"
 
-import {
-  Component,
-  getComponentElement
-} from "../_"
+import { Component } from "../_"
 import { Header } from "../header"
 import { Main } from "../main"
 
@@ -76,8 +70,9 @@ import { Main } from "../main"
  * Table of contents
  */
 export interface TableOfContents {
-  prev: HTMLAnchorElement[][]          /* Anchors (previous) */
-  next: HTMLAnchorElement[][]          /* Anchors (next) */
+  prev: HTMLAnchorElement[][]          /* Anchors (above the viewport) */
+  active: HTMLAnchorElement[][]        /* Anchors (inside the viewport) */
+  next: HTMLAnchorElement[][]          /* Anchors (below the viewport) */
 }
 
 /* ----------------------------------------------------------------------------
@@ -119,7 +114,9 @@ interface MountOptions {
  * Material theme currently doesn't make use of this information, it enables
  * the styling of the entire hierarchy through customization.
  *
- * Note that the current anchor is the last item of the `prev` anchor list.
+ * Note that all anchors inside the viewport are the items of the `active`
+ * anchor list, so a section is highlighted as soon as its heading enters the
+ * viewport and stays highlighted until it leaves it.
  *
  * @param el - Table of contents element
  * @param options - Options
@@ -143,25 +140,18 @@ export function watchTableOfContents(
   /* Compute necessary adjustment for header */
   const adjust$ = header$
     .pipe(
-      distinctUntilKeyChanged("height"),
-      map(({ height }) => {
-        const main = getComponentElement("main")
-        const grid = getElement(":scope > :first-child", main)
-        return height + 0.8 * (
-          grid.offsetTop -
-          main.offsetTop
-        )
-      }),
+      map(({ height }) => height),
+      distinctUntilChanged(),
       share()
     )
 
-  /* Compute partition of previous and next anchors */
+  /* Compute partition of previous, active and next anchors */
   const partition$ = watchElementSize(document.body)
     .pipe(
       distinctUntilKeyChanged("height"),
 
       /* Build index to map anchor paths to vertical offsets */
-      switchMap(body => defer(() => {
+      switchMap(() => defer(() => {
         let path: HTMLAnchorElement[] = []
         return of([...table].reduce((index, [anchor, target]) => {
           while (path.length) {
@@ -201,35 +191,57 @@ export function watchTableOfContents(
           /* Re-compute partition when viewport offset changes */
           switchMap(([index, adjust]) => viewport$
             .pipe(
-              scan(([prev, next], { offset: { y }, size }) => {
-                const last = y + size.height >= Math.floor(body.height)
+              scan(([prev, active, next], { offset: { y }, size }) => {
+                const top = y + adjust
+                const bottom = y + size.height
 
-                /* Look forward */
+                /* Look forward - anchors between the top and the bottom of
+                   the viewport enter the active partition, anchors below it
+                   stay in the next partition. Anchors above the top of the
+                   viewport always pass through the active partition, so that
+                   all three partitions stay sorted by vertical offset. */
                 while (next.length) {
                   const [, offset] = next[0]
-                  if (offset - adjust < y || last) {
-                    prev = [...prev, next.shift()!]
+                  if (offset < bottom) {
+                    active = [...active, next.shift()!]
                   } else {
                     break
                   }
                 }
 
                 /* Look backward */
+                while (active.length) {
+                  const [, offset] = active[0]
+                  if (offset < top) {
+                    prev = [...prev, active.shift()!]
+                  } else {
+                    break
+                  }
+                }
                 while (prev.length) {
                   const [, offset] = prev[prev.length - 1]
-                  if (offset - adjust >= y && !last) {
-                    next = [prev.pop()!, ...next]
+                  if (offset >= top) {
+                    active = [prev.pop()!, ...active]
+                  } else {
+                    break
+                  }
+                }
+                while (active.length) {
+                  const [, offset] = active[active.length - 1]
+                  if (offset >= bottom) {
+                    next = [active.pop()!, ...next]
                   } else {
                     break
                   }
                 }
 
                 /* Return partition */
-                return [prev, next]
-              }, [[], [...index]]),
+                return [prev, active, next]
+              }, [[], [], [...index]]),
               distinctUntilChanged((a, b) => (
                 a[0] === b[0] &&
-                a[1] === b[1]
+                a[1] === b[1] &&
+                a[2] === b[2]
               ))
             )
           )
@@ -237,38 +249,39 @@ export function watchTableOfContents(
       )
     )
 
-  /* Compute and return anchor list migrations */
+  /* Compute anchor paths for all partitions */
   return partition$
     .pipe(
-      map(([prev, next]) => ({
+      map(([prev, active, next]) => ({
         prev: prev.map(([path]) => path),
+        active: active.map(([path]) => path),
         next: next.map(([path]) => path)
-      })),
-
-      /* Extract anchor list migrations */
-      startWith({ prev: [], next: [] }),
-      bufferCount(2, 1),
-      map(([a, b]) => {
-
-        /* Moving down */
-        if (a.prev.length < b.prev.length) {
-          return {
-            prev: b.prev.slice(Math.max(0, a.prev.length - 1), b.prev.length),
-            next: []
-          }
-
-        /* Moving up */
-        } else {
-          return {
-            prev: b.prev.slice(-1),
-            next: b.next.slice(0, b.next.length - a.next.length)
-          }
-        }
-      })
+      }))
     )
 }
 
 /* ------------------------------------------------------------------------- */
+
+/**
+ * Height of the highlighted tail of the indicator bar
+ */
+const TAIL = 8
+
+/**
+ * Retrieve the anchors that are inside the viewport
+ *
+ * When no anchor is inside the viewport, the last anchor above it is returned,
+ * so that the highlighted range never collapses while a section is read.
+ *
+ * @param state - Table of contents state
+ *
+ * @returns Anchors
+ */
+function getVisibleAnchors(
+  { prev, active }: TableOfContents
+): HTMLAnchorElement[][] {
+  return active.length ? active : prev.slice(-1)
+}
 
 /**
  * Mount table of contents
@@ -284,21 +297,46 @@ export function mountTableOfContents(
   return defer(() => {
     const push$ = new Subject<TableOfContents>()
     const done$ = push$.pipe(ignoreElements(), endWith(true))
-    push$.subscribe(({ prev, next }) => {
+    push$.subscribe(state => {
+      const visible = state.active
+      const shown = new Set(visible.map(([anchor]) => anchor))
+
+      /* Look backward */
+      for (const [anchor] of state.prev) {
+        anchor.classList.toggle("md-nav__link--passed", !shown.has(anchor))
+        anchor.classList.remove("md-nav__link--active")
+      }
+
+      /* Look at anchors inside the viewport */
+      for (const [anchor] of visible) {
+        anchor.classList.remove("md-nav__link--passed")
+        anchor.classList.add("md-nav__link--active")
+      }
 
       /* Look forward */
-      for (const [anchor] of next) {
+      for (const [anchor] of state.next) {
         anchor.classList.remove("md-nav__link--passed")
         anchor.classList.remove("md-nav__link--active")
       }
 
-      /* Look backward */
-      for (const [index, [anchor]] of prev.entries()) {
-        anchor.classList.add("md-nav__link--passed")
-        anchor.classList.toggle(
-          "md-nav__link--active",
-          index === prev.length - 1
-        )
+      /* Compute the range of the indicator bar */
+      const rect = el.getBoundingClientRect()
+      if (visible.length) {
+        const start = visible[0][0].getBoundingClientRect().top - rect.top
+        const end = visible[visible.length - 1][0]
+          .getBoundingClientRect().bottom - rect.top
+        el.style.setProperty("--pm-toc-marker-top", `${start}px`)
+        el.style.setProperty("--pm-toc-marker-height", `${end - start}px`)
+      } else if (state.prev.length) {
+
+        /* Only the content of the last anchor above the viewport is visible,
+           but not its heading, so only the tail of the bar is highlighted */
+        const end = state.prev[state.prev.length - 1][0]
+          .getBoundingClientRect().bottom - rect.top
+        el.style.setProperty("--pm-toc-marker-top", `${end - TAIL}px`)
+        el.style.setProperty("--pm-toc-marker-height", `${TAIL}px`)
+      } else {
+        el.style.setProperty("--pm-toc-marker-height", "0px")
       }
     })
 
@@ -314,12 +352,12 @@ export function mountTableOfContents(
       /* Bring active anchor into view */ // @todo: refactor
       push$
         .pipe(
-          filter(({ prev }) => prev.length > 0),
+          filter(state => getVisibleAnchors(state).length > 0),
           combineLatestWith(main$.pipe(observeOn(asyncScheduler))),
           withLatestFrom(smooth$)
         )
-          .subscribe(([[{ prev }], behavior]) => {
-            const [anchor] = prev[prev.length - 1]
+          .subscribe(([[state], behavior]) => {
+            const [anchor] = getVisibleAnchors(state)[0]
             if (anchor.offsetHeight) {
 
               /* Retrieve overflowing container and scroll */
@@ -348,11 +386,11 @@ export function mountTableOfContents(
           repeat({ delay: 250 }),
           withLatestFrom(push$)
         )
-          .subscribe(([, { prev }]) => {
+          .subscribe(([, state]) => {
             const url = getLocation()
 
             /* Set hash fragment to active anchor */
-            const anchor = prev[prev.length - 1]
+            const anchor = getVisibleAnchors(state)[0]
             if (anchor && anchor.length) {
               const [active] = anchor
               const { hash } = new URL(active.href)
