@@ -50,6 +50,7 @@ import {
 import { feature } from "~/_"
 import {
   Viewport,
+  getElement,
   getElementContainer,
   getElementSize,
   getElements,
@@ -58,7 +59,7 @@ import {
   watchElementSize
 } from "~/browser"
 
-import { Component } from "../_"
+import { Component, getComponentElement } from "../_"
 import { Header } from "../header"
 import { Main } from "../main"
 
@@ -73,6 +74,7 @@ export interface TableOfContents {
   prev: HTMLAnchorElement[][]          /* Anchors (above the viewport) */
   active: HTMLAnchorElement[][]        /* Anchors (inside the viewport) */
   next: HTMLAnchorElement[][]          /* Anchors (below the viewport) */
+  current: HTMLAnchorElement[]         /* Section at the reading position */
 }
 
 /* ----------------------------------------------------------------------------
@@ -117,7 +119,8 @@ interface MountOptions {
  * Note that all anchors inside the viewport are the items of the `active`
  * anchor list, so a section is highlighted as soon as its heading enters the
  * viewport and stays highlighted until it leaves it. The current anchor - the
- * section the viewport starts in - is the last item of the `prev` anchor list.
+ * section the viewport starts in - is `current`, using the original layout
+ * adjustment for anchor navigation.
  *
  * @param el - Table of contents element
  * @param options - Options
@@ -141,8 +144,15 @@ export function watchTableOfContents(
   /* Compute necessary adjustment for header */
   const adjust$ = header$
     .pipe(
-      map(({ height }) => height),
-      distinctUntilChanged(),
+      distinctUntilKeyChanged("height"),
+      map(({ height }) => {
+        const main = getComponentElement("main")
+        const grid = getElement(":scope > :first-child", main)
+        return {
+          visible: height,
+          reading: height + 0.8 * (grid.offsetTop - main.offsetTop)
+        }
+      }),
       share()
     )
 
@@ -152,7 +162,7 @@ export function watchTableOfContents(
       distinctUntilKeyChanged("height"),
 
       /* Build index to map anchor paths to vertical offsets */
-      switchMap(() => defer(() => {
+      switchMap(body => defer(() => {
         let path: HTMLAnchorElement[] = []
         return of([...table].reduce((index, [anchor, target]) => {
           while (path.length) {
@@ -193,7 +203,7 @@ export function watchTableOfContents(
           switchMap(([index, adjust]) => viewport$
             .pipe(
               scan(([prev, active, next], { offset: { y }, size }) => {
-                const top = y + adjust
+                const top = y + adjust.visible
                 const bottom = y + size.height
 
                 /* Look forward - anchors between the top and the bottom of
@@ -236,13 +246,36 @@ export function watchTableOfContents(
                   }
                 }
 
-                /* Return partition */
-                return [prev, active, next]
-              }, [[], [], [...index]]),
+                /* Keep the original reading position for follow/tracking. */
+                const last = bottom >= Math.floor(body.height)
+                const reading = y + adjust.reading
+                let current: HTMLAnchorElement[] = last
+                  ? [...index].at(-1)![0]
+                  : []
+                for (const [path, offset] of [...prev, ...active]) {
+                  if (offset < reading && !last)
+                    current = path
+                  else
+                    break
+                }
+
+                return [prev, active, next, current] as [
+                  [HTMLAnchorElement[], number][],
+                  [HTMLAnchorElement[], number][],
+                  [HTMLAnchorElement[], number][],
+                  HTMLAnchorElement[]
+                ]
+              }, [[], [], [...index], []] as [
+                [HTMLAnchorElement[], number][],
+                [HTMLAnchorElement[], number][],
+                [HTMLAnchorElement[], number][],
+                HTMLAnchorElement[]
+              ]),
               distinctUntilChanged((a, b) => (
                 a[0] === b[0] &&
                 a[1] === b[1] &&
-                a[2] === b[2]
+                a[2] === b[2] &&
+                a[3] === b[3]
               ))
             )
           )
@@ -253,20 +286,57 @@ export function watchTableOfContents(
   /* Compute anchor paths for all partitions */
   return partition$
     .pipe(
-      map(([prev, active, next]) => ({
+      map(([prev, active, next, current]) => ({
         prev: prev.map(([path]) => path),
         active: active.map(([path]) => path),
-        next: next.map(([path]) => path)
+        next: next.map(([path]) => path),
+        current
       }))
     )
 }
 
 /* ------------------------------------------------------------------------- */
 
+/** Width of the indicator bar */
+const WIDTH = 2
+
 /**
  * Height of the highlighted tail of the indicator bar
  */
 const TAIL = 8
+
+interface BarRow {
+  x: number
+  top: number
+  bottom: number
+}
+
+/** Draw a continuous ribbon which follows the indentation of each TOC row. */
+function getBarRows(paths: HTMLAnchorElement[][], ref: DOMRect): BarRow[] {
+  const rects = paths.map(([anchor]) => anchor.getBoundingClientRect())
+  const left = Math.min(...rects.map(rect => rect.left))
+  return rects.map(rect => ({
+    x: rect.left - left + WIDTH / 2,
+    top: rect.top - ref.top,
+    bottom: rect.bottom - ref.top
+  }))
+}
+
+function getBarPolygon(rows: BarRow[]): string {
+  const nodes: number[][] = []
+  for (const [index, row] of rows.entries()) {
+    if (index && row.x !== rows[index - 1].x)
+      nodes.push([rows[index - 1].x, row.top])
+    if (!index || row.x !== rows[index - 1].x)
+      nodes.push([row.x, row.top])
+    nodes.push([row.x, row.bottom])
+  }
+  const points = [
+    ...nodes.map(([x, y]) => `${x - WIDTH / 2}px ${y}px`),
+    ...[...nodes].reverse().map(([x, y]) => `${x + WIDTH / 2}px ${y}px`)
+  ]
+  return `polygon(${points.join(", ")})`
+}
 
 /**
  * Mount table of contents
@@ -283,6 +353,10 @@ export function mountTableOfContents(
     const push$ = new Subject<TableOfContents>()
     const done$ = push$.pipe(ignoreElements(), endWith(true))
     push$.subscribe(state => {
+      const rows = getBarRows(
+        [...state.prev, ...state.active, ...state.next],
+        el.getBoundingClientRect()
+      )
       const visible = state.active
       const shown = new Set(visible.map(([anchor]) => anchor))
 
@@ -304,25 +378,38 @@ export function mountTableOfContents(
         anchor.classList.remove("md-nav__link--active")
       }
 
-      /* Compute the range of the indicator bar */
-      const rect = el.getBoundingClientRect()
+      /* Compute the highlighted range of the indicator bar */
+      const start = state.prev.length
       if (visible.length) {
-        const start = visible[0][0].getBoundingClientRect().top - rect.top
-        const end = visible[visible.length - 1][0]
-          .getBoundingClientRect().bottom - rect.top
-        el.style.setProperty("--pm-toc-marker-top", `${start}px`)
-        el.style.setProperty("--pm-toc-marker-height", `${end - start}px`)
-      } else if (state.prev.length) {
+        const active = rows.slice(start, start + visible.length)
+        const top = active[0].top
+        const bottom = active[active.length - 1].bottom
+        el.style.setProperty("--pm-toc-marker-top", `${top}px`)
+        el.style.setProperty("--pm-toc-marker-height", `${bottom - top}px`)
+        el.style.setProperty("--pm-toc-marker-clip", getBarPolygon(
+          active.map(row => ({
+            x: row.x,
+            top: row.top - top,
+            bottom: row.bottom - top
+          }))
+        ))
+      } else if (start) {
 
         /* Only the content of the last anchor above the viewport is visible,
            but not its heading, so only the tail of the bar is highlighted */
-        const end = state.prev[state.prev.length - 1][0]
-          .getBoundingClientRect().bottom - rect.top
-        el.style.setProperty("--pm-toc-marker-top", `${end - TAIL}px`)
+        const row = rows[start - 1]
+        el.style.setProperty("--pm-toc-marker-top", `${row.bottom - TAIL}px`)
         el.style.setProperty("--pm-toc-marker-height", `${TAIL}px`)
+        el.style.setProperty("--pm-toc-marker-clip", getBarPolygon([
+          { x: row.x, top: 0, bottom: TAIL }
+        ]))
       } else {
         el.style.setProperty("--pm-toc-marker-height", "0px")
       }
+
+      el.style.setProperty("--pm-toc-track-clip", rows.length
+        ? getBarPolygon(rows)
+        : "polygon(0 0, 0 0, 0 0)")
     })
 
     /* Set up following, if enabled */
@@ -337,12 +424,12 @@ export function mountTableOfContents(
       /* Bring active anchor into view */ // @todo: refactor
       push$
         .pipe(
-          filter(({ prev }) => prev.length > 0),
+          filter(({ current }) => current.length > 0),
           combineLatestWith(main$.pipe(observeOn(asyncScheduler))),
           withLatestFrom(smooth$)
         )
-          .subscribe(([[{ prev }], behavior]) => {
-            const [anchor] = prev[prev.length - 1]
+          .subscribe(([[{ current }], behavior]) => {
+            const [anchor] = current
             if (anchor.offsetHeight) {
 
               /* Retrieve overflowing container and scroll */
@@ -371,13 +458,12 @@ export function mountTableOfContents(
           repeat({ delay: 250 }),
           withLatestFrom(push$)
         )
-          .subscribe(([, { prev }]) => {
+          .subscribe(([, { current }]) => {
             const url = getLocation()
 
             /* Set hash fragment to active anchor */
-            const anchor = prev[prev.length - 1]
-            if (anchor && anchor.length) {
-              const [active] = anchor
+            if (current.length) {
+              const [active] = current
               const { hash } = new URL(active.href)
               if (url.hash !== hash) {
                 url.hash = hash
