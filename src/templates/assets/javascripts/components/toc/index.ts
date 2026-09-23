@@ -323,7 +323,8 @@ function getBarRows(paths: HTMLAnchorElement[][], ref: DOMRect): BarRow[] {
 }
 
 function getBarPolygon(rows: BarRow[]): string {
-  const nodes: number[][] = []
+  type Point = [number, number]
+  const nodes: Point[] = []
   for (const [index, row] of rows.entries()) {
     if (index && row.x !== rows[index - 1].x)
       nodes.push([rows[index - 1].x, row.top])
@@ -331,10 +332,32 @@ function getBarPolygon(rows: BarRow[]): string {
       nodes.push([row.x, row.top])
     nodes.push([row.x, row.bottom])
   }
-  const points = [
-    ...nodes.map(([x, y]) => `${x - WIDTH / 2}px ${y}px`),
-    ...[...nodes].reverse().map(([x, y]) => `${x + WIDTH / 2}px ${y}px`)
-  ]
+  const path = nodes.filter(([x, y], index) =>
+    !index || x !== nodes[index - 1][0] || y !== nodes[index - 1][1]
+  )
+  if (path.length < 2)
+    return "polygon(0 0, 0 0, 0 0)"
+
+  /* Offset both sides of the centre line, including its horizontal turns. */
+  const normal = ([ax, ay]: Point, [bx, by]: Point): Point => {
+    const dx = bx - ax
+    const dy = by - ay
+    const length = Math.hypot(dx, dy)
+    return [dy * WIDTH / (2 * length), -dx * WIDTH / (2 * length)]
+  }
+  const edge = (side: number) => path.map((point, index) => {
+    const before = index
+      ? normal(path[index - 1], point)
+      : normal(point, path[1])
+    const after = index < path.length - 1
+      ? normal(point, path[index + 1])
+      : before
+    const shift: Point = before[0] === after[0] && before[1] === after[1]
+      ? before
+      : [before[0] + after[0], before[1] + after[1]]
+    return `${point[0] + side * shift[0]}px ${point[1] + side * shift[1]}px`
+  })
+  const points = [...edge(1), ...edge(-1).reverse()]
   return `polygon(${points.join(", ")})`
 }
 
