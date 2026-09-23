@@ -510,6 +510,11 @@
           navigator.serviceWorker.register('/service-worker.js', { scope: '/' })
             .then(function (reg) {
               console.log('PWA Registration succeeded. Scope is ' + reg.scope);
+              /* 每次加载都问一次有没有新脚本。导航触发的软更新被浏览器节流(同一份
+                 注册 24 小时一次),发布之后老用户手里的旧脚本要过了这一窗才会被
+                 换掉,而换脚本这件事决定的是新前端资源拿不拿得到。查不成(离线、
+                 服务端报错)静默过去 —— 这一次查不成,下一次加载还会查。 */
+              return reg.update().catch(function () {});
             }).catch(function (error) {
               console.log('PWA Registration failed with ' + error);
             });

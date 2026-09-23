@@ -314,7 +314,7 @@
       {% for script in config.extra_javascript %}
         {{ script | script_tag }}
       {% endfor %}
-      <script>"use strict";"serviceWorker"in navigator&&navigator.serviceWorker.register("/service-worker.js",{scope:"/"}).then((function(e){console.log("PWA Registration succeeded. Scope is "+e.scope)})).catch((function(e){console.log("PWA Registration failed with "+e)}))</script>
+      <script>"use strict";"serviceWorker"in navigator&&navigator.serviceWorker.register("/service-worker.js",{scope:"/"}).then((function(e){return console.log("PWA Registration succeeded. Scope is "+e.scope),e.update().catch((function(){}))})).catch((function(e){console.log("PWA Registration failed with "+e)}))</script>
     {% endblock %}
   </body>
 </html>
