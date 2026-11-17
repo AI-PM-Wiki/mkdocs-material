@@ -17,6 +17,9 @@
   {% endif %}
   <span class="md-ellipsis">
     {{ ref.title }}
+    {% if nav_item.is_link %}
+      <span class="aipm-external-link-icon" role="img" aria-label="外部链接"></span>
+    {% endif %}
     {% if nav_item.meta and nav_item.meta.subtitle %}
       <br>
       <small>{{ nav_item.meta.subtitle }}</small>
@@ -78,7 +81,7 @@
       {% endif %}
     {% endif %}
     {% if "navigation.prune" in features %}
-      {% if not is_section and not nav_item.active %}
+      {% if not is_section and not nav_item.active and not nav_item.children | selectattr("is_link") | list %}
         {% set class = class ~ " md-nav__item--pruned" %}
         {% set is_pruned = true %}
       {% endif %}
